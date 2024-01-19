@@ -5,24 +5,10 @@ From CHKC Require Import Tactics ListUtil Map.
 Require Import Coq.FSets.FMapFacts.
 (** * Document Conventions *)
 
-(* 
-(** It is common when defining syntax for a language on paper to associate one or manysimple_type *)
-(*     _metavariables_ with each syntactic class. For example, the metavariables <<x>>, <<y>>,
-    and <<z>> are often used to represent the syntactic class of program variables. It is *)
-    understood that wherever these metavariables appear they indicate an implicit universalf
-    quantification over all members of the syntactic class they represent. In Coq, however,Rq
-
-
-    we have no such issue -- all quantification must be made explicit. However, we must still
-    grapple with the hardest problem in computer science: naming our quantified variables.
-    To ameliorate this problem, we maintain two stylistic invariants.
-
-    - (1) Whenever a new piece of syntax is introduced we we will include, in parentheses,
-          its associated metavariable. We will then use this as the naming convention for
-          naming universally quantified variables in the future.
-    - (2) Whenever syntax, semantics, or proofs appear in the associated paper
-          ("C C for Safety, Gradually") we take this to be an authoritative source
-          for naming. *)
+(*
+This document contains the coq file for Checked-CT not including the unsafe code region.
+Checked-CT is a subset of Checked-C focusing on ensuring the temporal safety of Checked region. 
+*)
 
 (** * Syntax *)
 
@@ -47,20 +33,11 @@ Local Open Scope Z_scope.
 
 
 Definition var    := nat.
-Definition field  := nat.
-Definition struct := nat.
 Definition funid := nat.
 
 (* Useful shorthand in case we ever change representation. *)
 Definition var_eq_dec := Nat.eq_dec.
 
-(** The Mode ([m]) is
-
-The [mode], indicated by metavariable [m], is either [C] or [U]. *)
-
-Inductive mode : Type :=
-  | C : mode (* c mode *)
-  | U : mode. (* u mode *)
 
 (** Types, <<w>>, are either a word type, [TInt, TPtr], a struct type, [TStruct],
     or an array type, [TArray]. Struct types must be annotated with a struct identifier.
@@ -89,12 +66,12 @@ Inductive mode : Type :=
 (* a bound is either a value or a expression as the form of var + num. *)
 Inductive bound : Set := | Num : Z -> bound | Var : var -> Z -> bound.
 
+Inductive tvalid : Set := | TNum : Z -> tvalid | TVar : var -> tvalid.
+
 Inductive type : Type :=
   | TInt : type
-  | TPtr : mode -> type -> type
-  | TStruct : struct -> type
-  | TArray : bound -> bound -> type -> type
-  | TNTArray : bound -> bound -> type -> type.
+  | TPtr : bool -> type -> type (* bool indicates if the ptr is free or not. *)
+  | TArray : bound -> bound -> tvalid -> type -> type.  (* tvalid indicates the cutting edge position is free or not. *)
 
 Definition type_eq_dec (t1 t2 : type): {t1 = t2} + {~ t1 = t2}.
   repeat decide equality.
@@ -116,6 +93,7 @@ Hint Constructors word_type.
 
 Require Import OrderedTypeEx.
 
+(*
 Module Fields := FMapList.Make Nat_as_OT.
 
 Definition fields := Fields.t type.
@@ -128,7 +106,7 @@ Definition fields := Fields.t type.
 Module StructDef := Map.Make Nat_as_OT.
 
 Definition structdef := StructDef.t fields.
-
+*)
 (*
 Inductive none_bound_only : bound -> Prop :=
     | none_bound_only_1: forall n, none_bound_only (Num n)
@@ -151,22 +129,21 @@ Inductive well_bound_in : env -> bound -> Prop :=
    | well_bound_in_num : forall env n, well_bound_in env (Num n)
    | well_bound_in_var : forall env x y, Env.MapsTo x TInt env -> well_bound_in env (Var x y).
 
+Inductive well_tv_in : env -> tvalid -> Prop :=
+   | well_tv_in_num : forall env n, well_tv_in env (TNum n)
+   | well_tv_in_var : forall env x, Env.MapsTo x TInt env -> well_tv_in env (TVar x).
+
 Inductive well_type_bound_in : env -> type -> Prop :=
    | well_type_bound_in_nat : forall env, well_type_bound_in env TInt
    | well_type_bound_in_ptr : forall m t env, well_type_bound_in env t -> well_type_bound_in env (TPtr m t)
-   | well_type_bound_in_struct : forall env T, well_type_bound_in env (TStruct T)
-   | well_type_bound_in_array : forall env l h t, well_bound_in env l -> well_bound_in env h -> 
-                                      well_type_bound_in env t -> well_type_bound_in env (TArray l h t)
-   | well_type_bound_in_ntarray : forall env l h t, well_bound_in env l -> well_bound_in env h -> 
-                                      well_type_bound_in env t -> well_type_bound_in env (TNTArray l h t).
+   | well_type_bound_in_array : forall env l h tv t, well_bound_in env l -> well_bound_in env h -> well_tv_in env tv ->
+                                      well_type_bound_in env t -> well_type_bound_in env (TArray l h tv t).
 
 (* Definition of simple type meaning that no bound variables. *)
 Inductive simple_type : type -> Prop := 
   | SPTInt : simple_type TInt
   | SPTPtr : forall m w, simple_type w -> simple_type (TPtr m w)
-  | SPTStruct : forall t, simple_type (TStruct t)
-  | SPTArray : forall l h t, simple_type t -> simple_type (TArray (Num l) (Num h) t)
-  | SPTNTArray : forall l h t, simple_type t -> simple_type (TNTArray (Num l) (Num h) t).
+  | SPTArray : forall l h v t, simple_type t -> simple_type (TArray (Num l) (Num h) (TNum v) t).
 
 (*
 Inductive ext_bound_in : list var -> bound -> Prop :=
@@ -183,20 +160,13 @@ Inductive ext_type_in : list var -> type -> Prop :=
                         -> ext_type_in l t -> ext_type_in l (TNTArray b1 b2 t).
 *)
 
-Inductive type_wf (D : structdef) : type -> Prop :=
-  | WFTInt : type_wf D (TInt)
-  | WFTPtr : forall m w, type_wf D w -> type_wf D (TPtr m w)
-  | WFTStruct : forall T,
-      (exists (fs : fields), StructDef.MapsTo T fs D) ->
-      type_wf D (TStruct T)
-  | WFArray : forall l h t,
+Inductive type_wf : type -> Prop :=
+  | WFTInt : type_wf (TInt)
+  | WFTPtr : forall m w, type_wf w -> type_wf (TPtr m w)
+  | WFArray : forall l h tv t,
       word_type t ->
-      type_wf D t ->
-      type_wf D (TArray l h t)
-  | WFNTArry : forall l h t,       
-      word_type t ->
-      type_wf D t ->
-      type_wf D (TNTArray l h t).
+      type_wf t ->
+      type_wf (TArray l h tv t).
 
 (*
 Definition no_ebound (b:bound): Prop :=
@@ -213,6 +183,7 @@ Inductive no_etype : type -> Prop :=
   | no_etype_ntarray : forall l h t,  no_etype t -> no_ebound l -> no_ebound h -> no_etype (TNTArray l h t).
 *)
 
+(*
 Definition fields_wf (D : structdef) (fs : fields) : Prop :=
   forall f t,
     Fields.MapsTo f t fs ->
@@ -222,7 +193,7 @@ Definition structdef_wf (D : structdef) : Prop :=
   forall (T : struct) (fs : fields),
     StructDef.MapsTo T fs D ->
     fields_wf D fs.
-
+*)
 
 Inductive theta_elem : Type := TopElem | GeZero.
 
@@ -253,7 +224,7 @@ Proof.
   constructor. lia.
 Qed.
 
-(*Subtype relation in Figure 10. *)
+(*Subtype relation in Figure 10. 
 Inductive subtype (D : structdef) (Q:theta) : type -> type -> Prop :=
   | SubTyRefl : forall t, subtype D Q t t
   | SubTyBot : forall m l h t, word_type t -> nat_leq Q (Num 0) l -> nat_leq Q h (Num 1)
@@ -357,9 +328,10 @@ Proof.
         eapply nat_leq_trans. apply H10. assumption.
 Qed.
 
-
+*)
 
 (* Defining stack. *)
+(*
 Module Stack := Map.Make Nat_as_OT.
 
 Definition stack := Stack.t (Z * type).
@@ -369,12 +341,12 @@ Definition empty_stack := @Stack.empty (Z * type).
 Definition arg_stack := Stack.t bound.
 
 Definition empty_arg_stack := @Stack.empty bound.
-
+*)
 (*
 Definition dyn_env := Stack.t type.
 
 Definition empty_dyn_env := @Stack.empty type.
-*)
+
 
 Definition cast_bound (s:stack) (b:bound) : option bound :=
    match b with Num n => Some (Num n)
@@ -390,36 +362,48 @@ Inductive cast_type_bound (s:stack) : type -> type -> Prop :=
    | cast_type_bound_ntarray : forall l l' h h' t t', cast_bound s l = Some l' -> cast_bound s h = Some h' ->
                   cast_type_bound s t t' -> cast_type_bound s (TNTArray l h t) (TNTArray l' h' t')
    | cast_type_bound_struct : forall t, cast_type_bound s (TStruct t) (TStruct t).
-
+*)
 
 (*Syntax Definition. *)
 Inductive expression : Type :=
   | ELit : Z -> type -> expression
   | EVar : var -> expression
-  | EStrlen : var -> expression
-  | ECall : funid -> list expression -> expression
-  | ERet : var -> Z* type -> option (Z * type) -> expression -> expression (* return new value, old value and the type. *)
-  | EDynCast : type -> expression -> expression
+  | ECall : funid -> list var -> list expression -> expression
+     (* any function call is associated with a list of metavariable for defined 
+         f (#define lv_1 ... lv_n) (e1,...,en) { e } *)
   | ELet : var -> expression -> expression -> expression
   | EMalloc : type -> expression
+  | EFree : expression -> expression
   | ECast : type -> expression -> expression
   | EPlus : expression -> expression -> expression
-  | EFieldAddr : expression -> field -> expression
   | EDeref : expression -> expression (*  * e *)
   | EAssign : expression -> expression -> expression (* *e = e *)
-  | EIfDef : var -> expression -> expression -> expression (* if * x then e1 else e2. *)
+  | EIfDef : list var -> expression -> context -> context -> expression -> expression
+        (* ifdefelse : if defined(lv_1) && defined(lv_2) && ... && defined (lv_n) && e1 then C1(e2) else C2(e2) *)
   | EIf : expression -> expression -> expression -> expression (* if e1 then e2 else e3. *)
-  | EUnchecked : expression -> expression.
+with context : Type :=
+  | CHole : context
+  | CLet : var -> context -> expression -> context
+  | CPlusL : context -> expression -> context
+  | CPlusR : Z -> type -> context -> context
+  | CFree : context -> context
+  | CCast : type -> context -> context
+  | CDeref : context -> context
+  | CAssignL : context -> expression -> context
+  | CAssignR : Z -> type -> context -> context
+  | CIfDef : list var -> context -> context -> context -> expression -> context
+          (* context evaluation for ifdef, only evaluates the boolean expr part. *)
+  | CIf : context -> expression -> expression -> context.
 
-Parameter fenv : env -> funid -> option (list (var * type) * type * expression * mode).
+Parameter fenv : env -> funid -> option (list (var * type) * type * expression).
 
-Definition FEnv : Type := env -> funid -> option (list (var * type) * type * expression * mode).
+Definition FEnv : Type := env -> funid -> option (list (var * type) * type * expression).
 
 Inductive gen_arg_env : env -> list (var * type) -> env -> Prop :=
     gen_arg_env_empty : forall env, gen_arg_env env [] env
   | gen_ar_env_many : forall env x t tvl env', gen_arg_env env tvl env' -> gen_arg_env env ((x,t)::tvl) (Env.add x t env').
 
-(* Well-formedness definition. *)
+(* Well-formedness definition. 
 Definition is_check_array_ptr (t:type) : Prop :=
   match t with TPtr C (TArray l h t') => True
              | TPtr C (TNTArray l h t') => True
@@ -437,62 +421,54 @@ Definition simple_option (D : structdef) (a:option (Z*type)) :=
   match a with None => True
          | Some (v,t) => word_type t /\ type_wf D t /\ simple_type t
   end.
+*)
 
-Inductive expr_wf (D : structdef) (F:FEnv) : expression -> Prop :=
+Inductive expr_wf (F:FEnv) : expression -> Prop :=
   | WFELit : forall n t,
     word_type t ->
-    type_wf D t ->
+    type_wf t ->
     simple_type t ->
-    expr_wf D F (ELit n t)
+    expr_wf F (ELit n t)
   | WFEVar : forall x,
-      expr_wf D F (EVar x)
-  | WFEStr : forall x,
-      expr_wf D F (EStrlen x)
+      expr_wf F (EVar x)
   | WFECall : forall x el, 
       (forall env v, fenv env x = Some v) ->
       (forall e, In e el -> (exists n t, e = ELit n t
-                 /\ word_type t /\ type_wf D t /\ simple_type t) \/ (exists y, e = EVar y)) ->
-      expr_wf D F (ECall x el)
-  | WFRet : forall x old a e, simple_option D (Some old) -> simple_option D a -> expr_wf D F e -> expr_wf D F (ERet x old a e)
-  | WFEDynCast : forall t e, 
-     is_array_ptr t -> type_wf D t -> expr_wf D F e -> expr_wf D F (EDynCast t e)
+                 /\ word_type t /\ type_wf t /\ simple_type t) \/ (exists y, e = EVar y)) ->
+      expr_wf F (ECall x el)
   | WFELet : forall x e1 e2,
-      expr_wf D F e1 ->
-      expr_wf D F e2 ->
-      expr_wf D F (ELet x e1 e2)
+      expr_wf F e1 ->
+      expr_wf F e2 ->
+      expr_wf F (ELet x e1 e2)
   | WFEIFDef : forall x e1 e2,
-      expr_wf D F e1 ->
-      expr_wf D F e2 ->
-      expr_wf D F (EIfDef x e1 e2)
+      expr_wf F e1 ->
+      expr_wf F e2 ->
+      expr_wf F (EIfDef x e1 e2)
   | WFEIF : forall e1 e2 e3,
-      expr_wf D F e1 ->
-      expr_wf D F e2 ->
-      expr_wf D F e3 ->
-      expr_wf D F (EIf e1 e2 e3)
+      expr_wf F e1 ->
+      expr_wf F e2 ->
+      expr_wf F e3 ->
+      expr_wf F (EIf e1 e2 e3)
   | WFEMalloc : forall w,
-      type_wf D w -> expr_wf D F (EMalloc w)
+      type_wf w -> expr_wf F (EMalloc w)
+  | WFEFree : forall e,
+      expr_wf F e -> expr_wf F (EFree e)
   | WFECast : forall t e,
       word_type t ->
-      type_wf D t ->
-      expr_wf D F e ->
-      expr_wf D F (ECast t e)
+      type_wf t ->
+      expr_wf F e ->
+      expr_wf F (ECast t e)
   | WFEPlus : forall e1 e2,
-      expr_wf D F e1 ->
-      expr_wf D F e2 ->
-      expr_wf D F (EPlus e1 e2)
-  | WFEFieldAddr : forall e f,
-      expr_wf D F e ->
-      expr_wf D F (EFieldAddr e f)
+      expr_wf F e1 ->
+      expr_wf F e2 ->
+      expr_wf F (EPlus e1 e2)
   | WFEDeref : forall e,
-      expr_wf D F e ->
-      expr_wf D F (EDeref e)
+      expr_wf F e ->
+      expr_wf F (EDeref e)
   | WFEAssign : forall e1 e2,
-      expr_wf D F e1 ->
-      expr_wf D F e2 ->
-      expr_wf D F (EAssign e1 e2)
-  | WFEUnchecked : forall e,
-      expr_wf D F e ->
-      expr_wf D F (EUnchecked e).
+      expr_wf F e1 ->
+      expr_wf F e2 ->
+      expr_wf F (EAssign e1 e2).
 
 
 (* Standard substitution.
