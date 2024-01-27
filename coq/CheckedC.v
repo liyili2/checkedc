@@ -1195,7 +1195,6 @@ Inductive well_typed {F : fenv} {H:heap}
       well_typed s env Q (EAssign (EPlus e1 e2) e3) t
 
   | TyIfDef : forall s env Q vl e1 C1 C2 e2 t,
-      sublist vl s ->
       well_typed s env Q e1 TInt ->
       well_typed s env Q (in_hole e2 C1) t ->
       well_typed s env Q (in_hole e2 C2) t ->
