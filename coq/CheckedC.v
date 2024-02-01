@@ -29,6 +29,11 @@ Export ListNotations.
 Require Export BinNums.
 Require Import BinPos BinNat.
 
+Import Coq.Lists.List.ListNotations.
+
+Scheme Equality for list.
+
+
 Local Open Scope Z_scope.
 
 
@@ -66,8 +71,10 @@ Definition var_eq_dec := Nat.eq_dec.
 (* a bound is either a value or a expression as the form of var + num. *)
 Inductive bound : Set := | Num : Z -> bound | Var : var -> Z -> bound.
 
+Definition cbound : Set := list (list var * bound * bound).
+
 Inductive tau : Set := TInt | TPtr (t:omega)
-with omega : Set := TOmega (t:tau) | TArray (b1:bound) (b2:bound) (t: tau).
+with omega : Set := TOmega (t:tau) | TArray (cb:cbound) (t: tau).
 
 Coercion TOmega : tau >-> omega.
 
@@ -132,33 +139,56 @@ Inductive well_bound_in : env -> bound -> Prop :=
    | well_bound_in_num : forall env n, well_bound_in env (Num n)
    | well_bound_in_var : forall env x y, Env.MapsTo x (TInt) env -> well_bound_in env (Var x y).
 
+Inductive well_cbound_in: env -> cbound -> Prop :=
+  | well_cbound_empty : forall env, well_cbound_in env nil
+  | well_cbound_many : forall env x xs, well_bound_in env (snd (fst x))
+          -> well_bound_in env (snd x) -> well_cbound_in env xs -> well_cbound_in env (x::xs).
+
 Inductive well_tau_bound_in : env -> tau -> Prop :=
    | well_tau_bound_in_nat : forall env, well_tau_bound_in env TInt
    | well_tau_bound_in_ptr : forall t env, well_tau_bound_in env t -> well_tau_bound_in env (TPtr t)
 with well_omega_bound_in : env -> omega -> Prop :=
    | well_tau_bound_in_tau : forall env t, well_tau_bound_in env t -> well_omega_bound_in env (TOmega t)
-   | well_tau_bound_in_array : forall env l h t, well_bound_in env l -> well_bound_in env h ->
-                                      well_tau_bound_in env t -> well_omega_bound_in env (TArray l h t).
+   | well_tau_bound_in_array : forall env lh t, well_cbound_in env lh ->
+                                      well_tau_bound_in env t -> well_omega_bound_in env (TArray lh t).
 
 Inductive well_bound_vars {A:Type}: list (var * A) -> bound -> Prop :=
   | well_bound_vars_num : forall l n, well_bound_vars l (Num n)
   | well_bound_vars_var : forall l y n, (exists a, In (y,a) l) -> well_bound_vars l (Var y n).
+
+Inductive well_cbound_vars {A:Type}: list (var * A) -> cbound -> Prop :=
+  | well_cbound_vars_empty : forall env, well_cbound_vars env nil
+  | well_cbound_vars_many : forall env x xs, well_bound_vars env (snd (fst x))
+          -> well_bound_vars env (snd x) -> well_cbound_vars env xs -> well_cbound_vars env (x::xs).
 
 Inductive well_bound_vars_type {A:Type}: list (var * A) -> tau -> Prop :=
   | well_bound_vars_nat : forall l, well_bound_vars_type l (TInt)
   | well_bound_vars_ptr : forall l t, well_bound_vars_type l t -> well_bound_vars_type l (TPtr t)
 with well_bound_vars_omega {A:Type} : list (var * A) -> omega -> Prop :=
   | well_bound_vars_tau : forall env t, well_bound_vars_type env t -> well_bound_vars_omega env (TOmega t)
-  | well_bound_vars_array : forall l b1 b2 t, well_bound_vars l b1 -> well_bound_vars l b2
-                        -> well_bound_vars_type l t -> well_bound_vars_omega l (TArray b1 b2 t).
+  | well_bound_vars_array : forall l b t, well_cbound_vars l b 
+                        -> well_bound_vars_type l t -> well_bound_vars_omega l (TArray b t).
 
 (* Definition of simple tau meaning that no bound variables. *)
+Definition simple_bound (b:bound) :=
+   match b with Num x => True | _ => False end.
+
+Definition simple_cbound (l:cbound) :=
+  forall x y z, List.In (x,y,z) l -> simple_bound y /\ simple_bound z.
+
 Inductive simple_tau : tau -> Prop :=
    | SPTInt : simple_tau TInt
    | SPTPtr : forall t, simple_tau t -> simple_tau (TPtr t)
 with simple_omega : omega -> Prop :=
    | SPTTau : forall t, simple_tau t -> simple_omega (TOmega t)
-   | SPTArray : forall l h t, simple_tau t -> simple_omega (TArray (Num l) (Num h) t).
+   | SPTArray : forall b t, simple_cbound b -> simple_tau t -> simple_omega (TArray b t).
+
+Inductive esimple_tau : tau -> Prop :=
+   | ESPTInt : esimple_tau TInt
+   | ESPTPtr : forall t, esimple_tau t -> esimple_tau (TPtr t)
+with esimple_omega : omega -> Prop :=
+   | ESPTTau : forall t, esimple_tau t -> esimple_omega (TOmega t)
+   | ESPTArray : forall l h t, esimple_tau t -> esimple_omega (TArray ([(nil, Num l, Num h)]) t).
 
 (*
 Inductive ext_bound_in : list var -> bound -> Prop :=
@@ -231,13 +261,29 @@ Proof.
   constructor. lia.
 Qed.
 
+Definition list_beq_c xl yl := list_beq var (fun x y => Nat.eqb x y) xl yl.
+
+Fixpoint subt_bound (T:theta) (cl:list var) (b1:bound) (b2:bound) (c2:cbound) : Prop :=
+  match c2 with nil => False
+              | (x,y,u)::xs => if list_beq_c cl x then (nat_leq T b1 y /\ nat_leq T u b2) else subt_bound T cl b1 b2 xs
+  end.
+
+Fixpoint subt_bounds (T:theta) (c1:cbound) (c2:cbound) : Prop :=
+  match c1 with nil => True
+              | (x,y,u)::xs => subt_bound T x y u c2 /\ subt_bounds T xs c2
+  end.
+
+Fixpoint subt_empty_bound  (T:theta) (b1:bound) (b2:bound) (c2:cbound) : Prop :=
+  match c2 with nil => True
+              | (x,y,u)::xs => nat_leq T b1 y /\ nat_leq T u b2 /\ subt_empty_bound T b1 b2 xs
+  end.
+
 Inductive subtype (Q:theta) : tau -> tau -> Prop :=
   | SubTyRefl : forall t, subtype Q t t
-  | SubTyBot : forall l h t, nat_leq Q (Num 0) l -> nat_leq Q h (Num 1)
-                           -> subtype Q (TPtr (TOmega t)) (TPtr (TArray l h t))
-  | SubTySubsume : forall l h l' h' t,
-    nat_leq Q l l' -> nat_leq Q h' h -> 
-    subtype Q (TPtr (TArray l h t)) (TPtr (TArray l' h' t)).
+  | SubTyBot : forall lh t, subt_empty_bound Q (Num 0) (Num 1) lh ->
+                         subtype Q (TPtr (TOmega t)) (TPtr (TArray lh t))
+  | SubTySubsume : forall lh lh' t, subt_bounds Q lh lh' ->
+    subtype Q (TPtr (TArray lh t)) (TPtr (TArray lh' t)).
 
 (* Subtyping transitivity. *)
 Lemma subtype_trans : forall Q t t' w, subtype Q t (TPtr w) -> subtype Q (TPtr w) t' -> subtype Q t t'.
@@ -247,13 +293,16 @@ Proof.
       * eapply SubTyBot;eauto.
       * eapply SubTySubsume; eauto.
       * eapply SubTyBot; eauto.
-      * eapply SubTyBot;eauto. eapply nat_leq_trans. apply H2. assumption.
+      * eapply SubTyBot;eauto.
+Admitted.
+(* eapply nat_leq_trans. apply H2. assumption.
          eapply nat_leq_trans. apply H7. assumption.
       * eapply SubTySubsume;eauto.
       * eapply SubTySubsume; eauto.
         eapply nat_leq_trans. apply H2. assumption.
         eapply nat_leq_trans. apply H7. assumption.
 Qed.
+*)
 
 (* Defining stack. *)
 (*
@@ -345,6 +394,12 @@ Definition simple_option (D : structdef) (a:option (Z*tau)) :=
   end.
 *)
 
+Definition single_omega (w:omega) :=
+   match w with TArray ([(nil, x,y)]) t => True | _ => False end.
+
+Definition single_tau (w:tau) :=
+   match w with TPtr (TArray ([(nil, x,y)]) t) => True | _ => False end.
+
 Inductive expr_wf (F:fenv) : expression -> Prop :=
   | WFELit : forall n t,
     expr_wf F (ELit n t)
@@ -375,10 +430,11 @@ Inductive expr_wf (F:fenv) : expression -> Prop :=
       expr_wf F e2 ->
       expr_wf F e3 ->
       expr_wf F (EIf e1 e2 e3)
-  | WFEMalloc : forall w, expr_wf F (EMalloc w)
+  | WFEMalloc : forall w, single_omega w -> expr_wf F (EMalloc w)
   | WFEFree : forall e,
       expr_wf F e -> expr_wf F (EFree e)
   | WFECast : forall t e,
+      single_tau t ->
       expr_wf F e ->
       expr_wf F (ECast t e)
   | WFEPlus : forall e1 e2,
@@ -485,8 +541,9 @@ end.
 Definition allocate_meta (w : omega)
   : option (Z * list tau) :=
   match w with
-  | TArray (Num l) (Num h) T =>
+  | TArray ([(nil, (Num l),(Num h))]) T =>
     Some (l, Zreplicate (h - l + 1) T)
+  | TArray _ _ => None
   | _ => Some (0, [TPtr w])
   end.
 
@@ -570,7 +627,7 @@ Fixpoint find_cxt (cl:list var) (E : context) : list var :=
   | CDeref E' => find_cxt cl E'
   | CAssignL E' e' => find_cxt cl E'
   | CAssignR n t E' => find_cxt cl E'
-  | CCt vl C => find_cxt vl C
+  | CCt vl C => find_cxt (cl++vl) C
   | CIfDef vl C1 C2 C3 e1 => find_cxt cl C1
   | CIf E' e1 e2 => find_cxt cl E'
   end.
@@ -669,7 +726,12 @@ Definition is_rexpr (r : result) : Prop :=
 *)
 
 Definition is_array_ptr (t:tau) : Prop :=
-  match t with TPtr (TArray l h t') => True
+  match t with TPtr (TArray lh t') => True
+             | _ => False
+  end.
+
+Definition is_simp_array_ptr (t:tau) : Prop :=
+  match t with TPtr (TArray ([(nil, Num l, Num h)]) t') => True
              | _ => False
   end.
 
@@ -678,13 +740,16 @@ Definition sub_bound (b:bound) (n:Z) : (bound) :=
            | Var x m => Var x (m - n)
   end.
 
+Definition sub_cbound (c:cbound) (n:Z) := List.map (fun a => match a with (x,y,z) => (x,sub_bound y n, sub_bound z n) end) c.
+
+
 Definition sub_tau_bound (t:tau) (n:Z) : tau :=
-   match t with TPtr (TArray l h t1) => TPtr (TArray (sub_bound l n) (sub_bound h n) t1)
+   match t with TPtr (TArray lh t1) => TPtr (TArray (sub_cbound lh n) t1)
               | _ => t
    end.
 
 Definition malloc_bound (t:omega) : Prop :=
-   match t with (TArray (Num l) (Num h) t) => (l = 0 /\ h > 0)
+   match t with (TArray ([(nil,(Num l), (Num h))]) t) => (l = 0 /\ h > 0)
               | _ => True
    end.
 
@@ -703,22 +768,22 @@ Fixpoint gen_stack (vl:list var)  (es:list expression) (e:expression) : option e
 *)
 
 Definition get_high_ptr (t : tau) := 
-    match t with (TPtr (TArray l h t')) => Some h
+    match t with (TPtr (TArray ([(nil, l, h)]) t')) => Some h
               | _ => None
     end.
 
 Definition get_high (t : omega) := 
-    match t with ((TArray l h t')) => Some h
+    match t with ((TArray ([(nil, l, h)]) t')) => Some h
               | _ => None
     end.
 
 Definition get_low_ptr (t : tau) := 
-    match t with (TPtr (TArray l h t')) => Some l
+    match t with (TPtr (TArray ([(nil, l, h)]) t')) => Some l
               | _ => None
     end.
 
 Definition get_low (t : omega) := 
-    match t with ((TArray l h t')) => Some l
+    match t with ((TArray ([(nil, l, h)]) t')) => Some l
               | _ => None
     end.
 
@@ -771,6 +836,9 @@ Fixpoint remove_range (x:Z) (l:list (Z * Z)) :=
               if (u <=? x) && (x <? v) then remove_range x xs else ((u,v)::remove_range x xs)
    end.
 
+Definition subst_cbound (c:cbound) (x:var) (b1:bound) :=
+   List.map (fun a => match a with (u,v,w) => (u, subst_bound v x b1, subst_bound w x b1) end) c.
+
 
 Fixpoint subst_tau (t:tau) (x:var) (b1:bound) :=
    match t with TInt => TInt
@@ -778,12 +846,56 @@ Fixpoint subst_tau (t:tau) (x:var) (b1:bound) :=
    end
 with subst_omega (t:omega) (x:var) (b1:bound) :=
    match t with TOmega a => TOmega (subst_tau a x b1)
-              | TArray b1 b2 t => TArray (subst_bound b1 x b1) (subst_bound b2 x b1) (subst_tau t x b1)
+              | TArray b t => TArray (subst_cbound b x b1) (subst_tau t x b1)
    end.
 
+
+Definition inlist (a:var) (l:list var) := forallb (fun b => Nat.eqb a b) l.
+
+Definition sublist_f (l1 l2 : list var) := forallb (fun b => inlist b l2) l1.
+
+Definition sublist {A:Type} (l1:list A) (l2:list A) :=
+   forall x, In x l1 -> In x l2.
+
+Fixpoint simp_cbound (cl: list var) (b:cbound) : option cbound :=
+   match b with nil => None
+              | ((u,v,w)::xs) => if sublist_f u cl then Some ([(nil,v,w)]) else simp_cbound cl xs
+   end.
+
+Fixpoint simp_tau (cl:list var) (t:tau) :=
+   match t with TInt => Some TInt
+            | TPtr t' => match simp_omega cl t' with None => None | Some ta => Some (TPtr ta) end
+   end
+with simp_omega (cl:list var) (t:omega) :=
+   match t with TOmega a => match simp_tau cl a with None => None | Some ta => Some (TOmega ta) end
+              | TArray b t => match simp_cbound cl b with None => None
+                                                        | Some cb => 
+                      match (simp_tau cl t) with None => None
+                                               | Some ta => Some (TArray cb ta)
+                      end
+                              end
+   end.
+
+Fixpoint simp_exp (cl:list var) (e:expression) := 
+   match e with ELit n t => (match simp_tau cl t with None => ELit n t | Some t' => ELit n t' end)
+              | EVar y => EVar y
+              | ECall f el => ECall f (List.map (fun ea => simp_exp cl ea) el)
+              | ELet y e1 e2 => ELet y (simp_exp cl e1) (simp_exp cl e2)
+              | EMalloc t => EMalloc t
+              | EFree ea => EFree (simp_exp cl ea)
+              | ECast t ea => ECast t (simp_exp cl ea)
+              | EPlus e1 e2 => EPlus (simp_exp cl e1) (simp_exp cl e2)
+              | EDeref ea => EDeref (simp_exp cl ea)
+              | EAssign e1 e2 => EAssign (simp_exp cl e1) (simp_exp cl e2)
+              | ECt vl e1 => ECt vl (simp_exp (cl++vl) e1)
+              | EIfDef vl e1 C1 C2 e2 => EIfDef vl (simp_exp cl e1) C1 C2 e2
+              | EIf e1 e2 e3 => EIf (simp_exp cl e1) e2 e3
+  end.
+
+(* subst function and simplify. *)
 Fixpoint subst_exp (e:expression) (x:var) (v:Z) (tv:tau) := 
    match e with ELit n t => ELit n (subst_tau t x (Num v))
-              | EVar y => if Nat.eq_dec x y then ELit v tv else EVar y
+              | EVar y => if Nat.eqb x y then ELit v tv else EVar y
               | ECall f el => ECall f (List.map (fun ea => subst_exp ea x v tv) el)
               | ELet y e1 e2 => if Nat.eq_dec x y then ELet y (subst_exp e1 x v tv) e2
                                                   else ELet y (subst_exp e1 x v tv) (subst_exp e2 x v tv)
@@ -814,6 +926,7 @@ with subst_context (C:context) (x:var) (v:Z) (tv:tau) :=
              | CIf E e1 e2 => CIf (subst_context E x v tv) e1 e2
 end.
 
+
 (*
 Inductive get_root {D:structdef} : tau -> tau -> Prop :=
     get_root_word : forall m t, word_tau t -> get_root (TPtr m t) t
@@ -835,7 +948,7 @@ with delta : Set := DPtr (t:tau) | DTau (t:atype).
 
 Inductive get_root : omega -> tau -> Prop :=
     get_root_word : forall t, get_root (TOmega t) t
-  | get_root_array : forall l h t, get_root (TPtr (TArray l h t)) t.
+  | get_root_array : forall lh t, get_root (TPtr (TArray lh t)) t.
 
 
 Inductive gen_rets (vl : list var): list (var * tau) -> list expression -> expression -> tau -> expression -> Prop :=
@@ -844,131 +957,129 @@ Inductive gen_rets (vl : list var): list (var * tau) -> list expression -> expre
           gen_rets vl xl es e ta e' ->
           gen_rets vl ((x,t)::xl) ((ELit v tv)::es) e ta (ELet x (ELit v tv) e').
 
-Definition sublist {A:Type} (l1:list A) (l2:list A) :=
-   forall x, In x l1 -> In x l2.
-
 
 (* CoreChkC semantics. *)
-Inductive step {F:funid -> option (var * list (var * tau) * tau * expression)} {cl : list var} :
-               locks -> heap -> expression -> locks -> heap -> result -> Prop :=
+Inductive step {F:funid -> option (var * list (var * tau) * tau * expression)} :
+               list var -> locks -> heap -> expression -> locks -> heap -> result -> Prop :=
 
-  | SFun : forall s H x el t v tvl e e', 
+  | SFun : forall cl s H x el t v tvl e e', 
            F x = Some (v,tvl,t,e) ->
            (List.In v cl) ->
            gen_rets cl tvl el e t e' ->
-          step s H (ECall x el) s H (RExpr e')
-  | SLet : forall s H x n t e,
-      step s H (ELet x (ELit n t) e) s H (RExpr (subst_exp e x n t))
+          step cl s H (ECall x el) s H (RExpr e')
+  | SLet : forall cl s H x n t e, 
+      step cl s H (ELet x (ELit n t) e) s H (RExpr (simp_exp cl (subst_exp e x n t)))
 
-  | SAddArr : forall s H n1 t1 n2,
-      n1 > 0 -> is_array_ptr t1 -> 
-      step s H (EPlus (ELit n1 t1) (ELit n2 TInt))
+  | SAddArr : forall cl s H n1 t1 n2,
+      n1 > 0 -> is_simp_array_ptr t1 -> 
+      step cl s H (EPlus (ELit n1 t1) (ELit n2 TInt))
            s H (RExpr (ELit (n1 + n2) (sub_tau_bound t1 n2)))
-  | SAdd : forall s H t1 n1 n2,
-       ~ is_array_ptr t1 -> 
-      step s H (EPlus (ELit n1 t1) (ELit n2 TInt))
-           s H (RExpr (ELit (n1 + n2) t1))
-  | SAddArrNull : forall s H n1 t n2,
+  | SAdd : forall cl s H n1 n2,
+      step cl s H (EPlus (ELit n1 TInt) (ELit n2 TInt))
+           s H (RExpr (ELit (n1 + n2) TInt))
+  | SAddArrNull : forall cl s H n1 t n2,
       n1 <= 0 -> is_array_ptr t ->
-      step s H (EPlus (ELit n1 t) (ELit n2 (TInt))) s H RNull
-  | SCast : forall s H t n t',
-      step s H (ECast t (ELit n t')) s H (RExpr (ELit n t))
+      step cl s H (EPlus (ELit n1 t) (ELit n2 (TInt))) s H RNull
+  | SCast : forall cl s H t n t',
+      step cl s H (ECast t (ELit n t')) s H (RExpr (ELit n t))
   
-  | SDeref: forall s H n n1 t t1 t',
+  | SDeref: forall cl s H n n1 t t1 t',
       lock_in n s ->
       Heap.MapsTo n (n1, t1) H ->
-      (forall l h t', t = (TArray (Num l) (Num h) t') -> h > 0 /\ l <= 0 ) ->
+      (forall l h ta, t = (TArray ([(nil,(Num l), (Num h))]) ta) -> h > 0 /\ l <= 0 ) ->
+      esimple_tau (TPtr t) ->
       get_root t t' ->
-      step s H (EDeref (ELit n (TPtr t))) s H (RExpr (ELit n1 t'))
+      step cl s H (EDeref (ELit n (TPtr t))) s H (RExpr (ELit n1 t'))
 
-  | SDerefTSV : forall s H n t,
+  | SCt : forall cl s H vl n t, step cl s H (ECt vl (ELit n t)) s H (RExpr (ELit n t))
+
+  | SDerefTSV : forall cl s H n t,
       ~ lock_in n s ->
-      step s H (EDeref (ELit n (TPtr t))) s H RTSV
+      step cl s H (EDeref (ELit n (TPtr t))) s H RTSV
 
-  | SDerefHighOOB : forall s H n t h,
+  | SDerefHighOOB : forall cl s H n t h,
       h <= 0 ->
       get_high_ptr t = Some (Num h) ->
-      step s H (EDeref (ELit n t)) s H RBounds
-  | SDerefLowOOB : forall s H n t l,
+      step cl s H (EDeref (ELit n t)) s H RBounds
+  | SDerefLowOOB : forall cl s H n t l,
       l > 0 ->
       get_low_ptr t = Some (Num l) ->
-      step s H (EDeref (ELit n t)) s H RBounds
-  | SDerefNull : forall s H t n,
+      step cl s H (EDeref (ELit n t)) s H RBounds
+  | SDerefNull : forall cl s H t n,
       n <= 0 -> 
-      step s H (EDeref (ELit n (TPtr t))) s H RNull
+      step cl s H (EDeref (ELit n (TPtr t))) s H RNull
 
-  | SAssign : forall s H n t na ta tv n1 t1 H',
+  | SAssign : forall cl s H n t na ta tv n1 t1 H',
       lock_in n s ->
       Heap.MapsTo n (na,ta) H ->
-      (forall l h t', t = TPtr (TArray (Num l) (Num h) t') -> h > 0 /\ l <= 0) -> 
+      (forall l h t', t = TPtr (TArray ([(nil,(Num l), (Num h))]) t') -> h > 0 /\ l <= 0) -> 
       @get_root t tv ->
       H' = Heap.add n (n1, ta) H ->
-      step
+      step cl
          s H  (EAssign (ELit n t) (ELit n1 t1))
          s H' (RExpr (ELit n1 tv))
-  | SAssignTSV : forall s H n t n1 t1,
+  | SAssignTSV : forall cl s H n t n1 t1,
       ~ lock_in n s ->
-      step
+      step cl
         s H (EAssign (ELit n t) (ELit n1 t1))
         s H RTSV
-  | SAssignHighOOB : forall s H n t n1 t1 h,
+  | SAssignHighOOB : forall cl s H n t n1 t1 h,
       h <= 0 ->
       get_high_ptr t = Some (Num h) ->
-      step
+      step cl
         s H (EAssign (ELit n t) (ELit n1 t1))
         s H RBounds
-  | SAssignLowOOB : forall s H n t n1 t1 l,
+  | SAssignLowOOB : forall cl s H n t n1 t1 l,
       l > 0 ->
       get_low_ptr t = Some (Num l) ->
-      step
+      step cl
          s H (EAssign (ELit n t) (ELit n1 t1))
          s H RBounds
-  | SAssignNull : forall s H w n n1 t',
+  | SAssignNull : forall cl s H w n n1 t',
       n1 <= 0 ->
-      step
-         s H (EAssign (ELit n1 (TPtr w)) (ELit n t')) s H RNull
+      step cl s H (EAssign (ELit n1 (TPtr w)) (ELit n t')) s H RNull
 
-  | SMalloc : forall s H w H' n1 b,
+  | SMalloc : forall cl s H w H' n1 b,
       allocate H w = Some (n1, b, H') ->
-      step
+      step cl
          s H (EMalloc w)
          (b::s) H' (RExpr (ELit n1 (TPtr w)))
-  | SMallocHighOOB : forall s H w h,
+  | SMallocHighOOB : forall cl s H w h,
       h <= 0 ->
       get_high w = Some (Num h) ->
-      step s H (EMalloc w)  s H RBounds
-  | SMallocLowOOB : forall s H w l,
+      step cl s H (EMalloc w)  s H RBounds
+  | SMallocLowOOB : forall cl s H w l,
       l <> 0 ->
       get_low w = Some (Num l) ->
-      step s H (EMalloc w)  s H RBounds
+      step cl s H (EMalloc w)  s H RBounds
 
-  | SFree : forall s H n t,
+  | SFree : forall cl s H n t,
       lock_in n s ->
-      step
+      step cl
          s H (EFree (ELit n (TPtr t)))
          (remove_range n s) H (RExpr (ELit 0 TInt))
 
-  | SFreeTSV : forall s H n t,
+  | SFreeTSV : forall cl s H n t,
       ~ lock_in n s ->
-      step
+      step cl
          s H (EFree (ELit n (TPtr t)))
          s H RTSV
-  
-  | SIfDefTrue : forall s H vl n t C1 C2 e, n <> 0 -> 
+
+  | SIfDefTrue : forall cl s H vl n t C1 C2 e, n <> 0 -> 
            sublist vl cl ->
-           step s H (EIfDef vl (ELit n t) C1 C2 e) s H (RExpr (in_hole e C1))
+           step cl s H (EIfDef vl (ELit n t) C1 C2 e) s H (RExpr (in_hole e C1))
 
-  | SIfDefFalse1 : forall s H vl t C1 C2 e,
-           step s H (EIfDef vl (ELit 0 t) C1 C2 e) s H (RExpr (in_hole e C2))
+  | SIfDefFalse1 : forall cl s H vl t C1 C2 e,
+           step cl s H (EIfDef vl (ELit 0 t) C1 C2 e) s H (RExpr (in_hole e C2))
 
-  | SIfDefFalse2 : forall s H vl n t C1 C2 e,
+  | SIfDefFalse2 : forall cl s H vl n t C1 C2 e,
            ~ sublist vl cl ->
-           step s H (EIfDef vl (ELit n t) C1 C2 e) s H (RExpr (in_hole e C2))
+           step cl s H (EIfDef vl (ELit n t) C1 C2 e) s H (RExpr (in_hole e C2))
 
-  | SIfTrue : forall s H n t e1 e2, n <> 0 -> 
-           step s H (EIf (ELit n t) e1 e2) s H (RExpr e1)
-  | SIfFalse : forall s H t e1 e2, 
-              step s H (EIf (ELit 0 t) e1 e2) s H (RExpr e2).
+  | SIfTrue : forall cl s H n t e1 e2, n <> 0 -> 
+           step cl s H (EIf (ELit n t) e1 e2) s H (RExpr e1)
+  | SIfFalse : forall cl s H t e1 e2, 
+              step cl s H (EIf (ELit 0 t) e1 e2) s H (RExpr e2).
 
 
 Hint Constructors step.
@@ -995,24 +1106,24 @@ Hint Constructors step.
 *)
 
 Inductive reduce {F:funid -> option (var * list (var * tau) * tau * expression)} 
-          : locks -> heap -> expression -> locks -> heap -> result -> Prop :=
-  | RSExp : forall H s e H' s' e' E,
-      @step F (find_cxt nil E) s H e s' H' (RExpr e') ->
-      reduce s
+          : list var -> locks -> heap -> expression -> locks -> heap -> result -> Prop :=
+  | RSExp : forall cl H s e H' s' e' E,
+      @step F (find_cxt cl E) s H e s' H' (RExpr e') ->
+      reduce cl s
         H (in_hole e E) s'  H' (RExpr (in_hole e' E))
-  | RSHaltNull : forall H s e H' s' E,
-      @step F (find_cxt nil E) s H e s' H' RNull ->
-      reduce s
+  | RSHaltNull : forall cl H s e H' s' E,
+      @step F (find_cxt cl E) s H e s' H' RNull ->
+      reduce cl s
         H (in_hole e E) s' H' RNull
-  | RSHaltBounds : forall H s e H' s'  E,
-      @step F (find_cxt nil E) s H e s' H' RBounds ->
-      reduce s H (in_hole e E) s' H' RBounds.
+  | RSHaltBounds : forall cl H s e H' s'  E,
+      @step F (find_cxt cl E) s H e s' H' RBounds ->
+      reduce cl s H (in_hole e E) s' H' RBounds.
 
 Hint Constructors reduce.
 
 Definition reduces (F:funid -> option (var * list (var * tau) * tau * expression)) 
-    (s : locks) (H : heap) (e : expression) : Prop :=
-  exists (s' : locks) (H' : heap) (r : result), @reduce F s H e s' H' r.
+    (cl:list var) (s : locks) (H : heap) (e : expression) : Prop :=
+  exists (s' : locks) (H' : heap) (r : result), @reduce F cl s H e s' H' r.
 
 Hint Unfold reduces.
 
@@ -1185,8 +1296,8 @@ Inductive well_typed {F : fenv} {H:heap}
       subtype Q t t' ->
       get_root t' t'' ->
       well_typed s env Q (EDeref e) t'
-  | TyIndex : forall s env Q e1 l h e2 t,
-      well_typed s env Q e1 (TPtr (TArray l h t)) -> 
+  | TyIndex : forall s env Q e1 lh e2 t,
+      well_typed s env Q e1 (TPtr (TArray lh t)) -> 
       well_typed s env Q e2 (TInt) ->
       well_typed s env Q (EDeref (EPlus e1 e2)) t
   | TyAssign1 : forall s env Q e1 e2 t t1,
@@ -1194,14 +1305,14 @@ Inductive well_typed {F : fenv} {H:heap}
       well_typed s env Q e1 (TPtr t) ->
       well_typed s env Q e2 t1 ->
       well_typed s env Q (EAssign e1 e2) t
-  | TyAssign2 : forall s env Q e1 e2 l h t t',
+  | TyAssign2 : forall s env Q e1 e2 lh t t',
       subtype Q t' t ->
-      well_typed s env Q e1 (TPtr (TArray l h t)) ->
+      well_typed s env Q e1 (TPtr (TArray lh t)) ->
       well_typed s env Q e2 t' ->
       well_typed s env Q (EAssign e1 e2) t
-  | TyIndexAssign : forall s env Q e1 e2 e3 l h t t',
+  | TyIndexAssign : forall s env Q e1 e2 e3 lh t t',
       subtype Q t' t ->
-      well_typed s env Q e1 (TPtr (TArray l h t)) ->
+      well_typed s env Q e1 (TPtr (TArray lh t)) ->
       well_typed s env Q e2 TInt ->
       well_typed s env Q e3 t' ->
       well_typed s env Q (EAssign (EPlus e1 e2) e3) t
@@ -1237,7 +1348,7 @@ Ltac clean :=
 
 Lemma step_implies_reduces : forall F ls s H e H' s' r,
     @step F ls s H e s' H' r ->
-    reduces F s H e.
+    reduces F ls s H e.
 Proof.
   intros.
   assert (e = in_hole e CHole); try reflexivity.
@@ -1247,10 +1358,10 @@ Admitted.
 
 Hint Resolve step_implies_reduces : Progress.
 
-Lemma reduces_congruence : forall F H s e0 e,
+Lemma reduces_congruence : forall F cl H s e0 e,
     (exists E, in_hole e0 E = e) ->
-    reduces F s H e0 ->
-    reduces F s H e.
+    reduces F cl s H e0 ->
+    reduces F cl s H e.
 Proof.
   intros.
   destruct H0 as [ E Hhole ].
@@ -1296,15 +1407,15 @@ Proof.
 Qed.
 
 (* The Type Progress Theorem *)
-Lemma progress : forall F s ls H e t,
+Lemma progress : forall F sa ls H e t,
     heap_wf H ->
     expr_wf F e ->
     fun_wf F H ->
-    @well_typed F H s empty_env empty_theta e t ->
+    @well_typed F H nil empty_env empty_theta e t ->
     value e \/
-    reduces F ls H e.
+    reduces F ls sa H e.
 Proof with eauto 20 with Progress.
-  intros F s ls H e t HHwf Hewf Hfun Hwt.
+  intros F sa ls H e t HHwf Hewf Hfun Hwt.
   remember empty_env as env.
   remember empty_theta as Q.
   induction Hwt as [
@@ -1319,12 +1430,12 @@ Proof with eauto 20 with Progress.
                      s env Q e t HTy1 IH1                                       | (* Free *)
                      s env Q t e t' HSub HChkPtr HTy IH                         | (* Cast - nat *)
                      s env Q e ta t t' HTy IH HSub Hx                           | (* Deref *)
-                     s env Q e1 l h e2 t HTy1 IH1 HTy2 IH2                      | (* Index for array pointers *)
+                     s env Q e1 lh e2 t HTy1 IH1 HTy2 IH2                       | (* Index for array pointers *)
 
                      s env Q e1 e2 t t1 HSub HTy1 IH1 HTy2 IH2                  | (* Assign normal *)
-                     s env Q e1 e2 l h t t' HSub HTy1 IH1 HTy2 IH2              | (* Assign array *)
+                     s env Q e1 e2 lh t t' HSub HTy1 IH1 HTy2 IH2               | (* Assign array *)
 
-                     s env Q e1 e2 e3 l h t t' HSub HTy1 IH1 HTy2 IH2 HTy3 IH3  | (* IndAssign for array pointers *)
+                     s env Q e1 e2 e3 lh t t' HSub HTy1 IH1 HTy2 IH2 HTy3 IH3   | (* IndAssign for array pointers *)
                      s env Q vl e1 C1 C2 e2 t HTy1 IH1 HTy2 IH2 HTy3 IH3        | (* IfDef *)
                      s env Q e1 e2 e3 t HTy1 IH1 HTy2 IH2 HTy3 IH3                (* If *)
                  ]; clean.
